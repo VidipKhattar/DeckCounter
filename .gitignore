@@ -1,0 +1,15 @@
+frames_output/
+venv/
+__pycache__/
+*.pyc
+frames*
+cards_full
+datsets/
+models/
+test_video.mp4
+cards_sequence.txt
+cards_sequence.npy
+cards_detected.txt
+cards_detected.npy
+test_videoj.mp4
+.DS_Store

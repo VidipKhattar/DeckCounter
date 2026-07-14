@@ -1,0 +1,3 @@
+ultralytics
+opencv-python
+huggingface_hub
