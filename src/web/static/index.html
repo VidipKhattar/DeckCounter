@@ -14,12 +14,12 @@
       color: #e5e5e5;
       margin: 0;
       padding: 0;
+      overflow-x: hidden;
     }
 
     .camera-container {
-      width: 60%;
-      max-width: 800px;
-      aspect-ratio: 16 / 9;
+      width: 94%;
+      aspect-ratio: 4 / 3;
       background: #000;
       border: 1px solid #2d2d2d;
       position: relative;
@@ -28,13 +28,22 @@
       justify-content: center;
       overflow: hidden;
       border-radius: 4px;
-      margin-top: 4rem;
+      margin-top: 1.5rem;
       margin-bottom: 2rem;
     }
 
+    @media (min-width: 768px) {
+      .camera-container {
+        width: 60%;
+        max-width: 800px;
+        aspect-ratio: 16 / 9;
+        margin-top: 4rem;
+      }
+    }
+
     .guide-box {
-      width: 200px;
-      height: 280px;
+      width: clamp(130px, 45vw, 200px);
+      aspect-ratio: 5 / 7;
       border: 1px solid #b8a536;
       position: relative;
       transition: border-color 0.2s ease;
@@ -131,6 +140,13 @@
       pointer-events: none;
     }
 
+    #missing-tokens,
+    #captured-tokens {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
     #settings-panel {
       display: none;
     }
@@ -153,34 +169,38 @@
       height: 22px;
       color: #6fae7f;
     }
+
+    button, a {
+      touch-action: manipulation;
+    }
   </style>
 </head>
 <body>
   <div class="min-h-screen flex flex-col">
-    <header class="h-16 px-10 flex items-center justify-center border-b border-white/5 bg-[#141414] relative">
-      <div class="flex items-center gap-2.5">
+    <header class="h-16 px-4 md:px-10 flex items-center justify-center border-b border-white/5 bg-[#141414] relative">
+      <div class="flex items-center gap-2">
         <svg class="brand-mark" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect x="3" y="5" width="13" height="17" rx="2" transform="rotate(-8 3 5)" stroke="currentColor" stroke-width="1.4"/>
           <rect x="7" y="2" width="13" height="17" rx="2" fill="#141414" stroke="currentColor" stroke-width="1.4"/>
           <path d="M13.5 6.2c-1.6 0-2.6 1.3-2.6 2.6 0 2 2.6 3.6 2.6 3.6s2.6-1.6 2.6-3.6c0-1.3-1-2.6-2.6-2.6z" fill="currentColor"/>
         </svg>
-        <span class="text-[13px] font-semibold tracking-[0.3em] uppercase text-white">Deck<span class="text-[#6fae7f] font-light">Counter</span></span>
+        <span class="text-[11px] md:text-[13px] font-semibold tracking-[0.15em] md:tracking-[0.3em] uppercase text-white">Deck<span class="text-[#6fae7f] font-light">Counter</span></span>
       </div>
 
-      <div class="absolute right-10 flex items-center gap-6">
+      <div class="absolute right-3 md:right-10 flex items-center gap-3 md:gap-6">
         <button
           id="settings-toggle"
-          class="text-[10px] font-medium tracking-[0.3em] uppercase text-zinc-500 hover:text-white transition-colors"
-        >Configuration</button>
+          class="text-[9px] md:text-[10px] font-medium tracking-[0.15em] md:tracking-[0.3em] uppercase text-zinc-500 hover:text-white transition-colors"
+        >Config</button>
         <a
           href="https://github.com/VidipKhattar"
           target="_blank"
           rel="noopener noreferrer"
-          class="text-[10px] font-medium tracking-[0.3em] uppercase text-zinc-500 hover:text-white transition-colors"
+          class="hidden sm:inline text-[10px] font-medium tracking-[0.3em] uppercase text-zinc-500 hover:text-white transition-colors"
         >@VidipKhattar</a>
       </div>
 
-      <div id="settings-panel" class="absolute right-10 top-14 w-72 bg-[#1a1a1a] border border-zinc-800 rounded p-6 space-y-4 shadow-2xl z-20">
+      <div id="settings-panel" class="absolute right-3 md:right-10 top-14 w-[min(18rem,calc(100vw-1.5rem))] bg-[#1a1a1a] border border-zinc-800 rounded p-6 space-y-4 shadow-2xl z-20">
         <h3 class="text-[9px] font-bold uppercase tracking-widest text-zinc-600 mb-2">Detection Thresholds</h3>
 
         <label class="block space-y-1.5">
@@ -216,7 +236,7 @@
 
         <div id="onboarding-overlay">
           <span class="text-[9px] uppercase tracking-[0.4em] text-zinc-500 font-bold mb-2">How it works</span>
-          <div class="space-y-3 px-10">
+          <div class="space-y-3 px-5 md:px-10">
             <p class="text-xs text-zinc-300"><span class="text-zinc-500">1.</span> Hold a card inside the box below</p>
             <p class="text-xs text-zinc-300"><span class="text-zinc-500">2.</span> Riffle through the deck — swipe your thumb <span class="text-zinc-100 font-medium">sideways across the short edge</span> of the cards, not flicking down from the top</p>
             <p class="text-xs text-zinc-300"><span class="text-zinc-500">3.</span> Press <span class="text-zinc-100 font-medium">Q</span> or click <span class="text-zinc-100 font-medium">Stop &amp; Analyze</span> when done</p>
@@ -233,14 +253,14 @@
         </button>
       </div>
 
-      <div id="results-section" class="max-w-[1200px] w-full px-10 py-16 grid grid-cols-1 lg:grid-cols-4 gap-16 results-animate">
-        <div class="lg:col-span-3 space-y-16">
+      <div id="results-section" class="max-w-[1200px] w-full px-5 md:px-10 py-10 md:py-16 grid grid-cols-1 lg:grid-cols-4 gap-10 md:gap-16 results-animate">
+        <div class="lg:col-span-3 space-y-10 md:space-y-16 min-w-0">
           <div>
             <div class="flex items-center gap-3 mb-8">
               <div class="w-1.5 h-1.5 bg-[#8b5a5a]"></div>
               <h2 id="missing-heading" class="text-[10px] font-bold uppercase tracking-[0.25em] text-zinc-200">Critical: Missing Components (0)</h2>
             </div>
-            <div id="missing-tokens" class="flex flex-wrap gap-16"></div>
+            <div id="missing-tokens" class="flex flex-wrap gap-8 md:gap-16"></div>
           </div>
 
           <div class="pt-12 border-t border-white/5">

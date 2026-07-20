@@ -147,7 +147,16 @@
 
   async function startCamera() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Prefer the rear camera on phones/tablets (front camera is the wrong
+      // choice for scanning cards); laptops with only one camera ignore this.
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+        });
+      } catch (err) {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      }
       videoFeed.srcObject = stream;
       await videoFeed.play();
     } catch (err) {
