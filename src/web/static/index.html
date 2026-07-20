@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deck Counter</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #141414;
+      color: #e5e5e5;
+      margin: 0;
+      padding: 0;
+    }
+
+    .camera-container {
+      width: 60%;
+      max-width: 800px;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border: 1px solid #2d2d2d;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-radius: 4px;
+      margin-top: 4rem;
+      margin-bottom: 2rem;
+    }
+
+    .guide-box {
+      width: 200px;
+      height: 280px;
+      border: 1px solid #b8a536;
+      position: relative;
+      transition: border-color 0.2s ease;
+    }
+
+    .guide-box.recording {
+      border-color: #4a7c59;
+    }
+
+    .token {
+      font-family: 'Inter', sans-serif;
+      font-weight: 500;
+      border: 1px solid #2d2d2d;
+      background: transparent;
+      padding: 4px 10px;
+      border-radius: 2px;
+      font-size: 12px;
+      color: #a3a3a3;
+    }
+
+    .token-missing {
+      color: #8b5a5a;
+      border-color: #4a3b3b;
+    }
+
+    .token-captured {
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+
+    .token-captured:hover {
+      border-color: #4a7c59;
+      color: #e5e5e5;
+    }
+
+    #card-preview-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 10, 10, 0.85);
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+    }
+
+    #card-preview-modal.open {
+      display: flex;
+    }
+
+    #card-preview-modal img {
+      max-width: min(90vw, 480px);
+      border: 1px solid #2d2d2d;
+      border-radius: 4px;
+    }
+
+    @keyframes slideUp {
+      from { transform: translateY(60px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    .results-animate {
+      animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    #results-section {
+      display: none;
+    }
+
+    @keyframes fadeInDown {
+      from { transform: translateY(-24px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    .camera-animate {
+      animation: fadeInDown 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    #onboarding-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(10, 10, 10, 0.88);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.5rem;
+      text-align: center;
+      transition: opacity 0.3s ease;
+      z-index: 10;
+    }
+
+    #onboarding-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #settings-panel {
+      display: none;
+    }
+
+    #settings-panel.open {
+      display: block;
+    }
+
+    #status-label.status-done {
+      color: #6fae7f;
+      font-weight: 600;
+    }
+
+    #status-label.status-recording {
+      color: #d1b84a;
+    }
+
+    .brand-mark {
+      width: 22px;
+      height: 22px;
+      color: #6fae7f;
+    }
+  </style>
+</head>
+<body>
+  <div class="min-h-screen flex flex-col">
+    <header class="h-16 px-10 flex items-center justify-center border-b border-white/5 bg-[#141414] relative">
+      <div class="flex items-center gap-2.5">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="3" y="5" width="13" height="17" rx="2" transform="rotate(-8 3 5)" stroke="currentColor" stroke-width="1.4"/>
+          <rect x="7" y="2" width="13" height="17" rx="2" fill="#141414" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M13.5 6.2c-1.6 0-2.6 1.3-2.6 2.6 0 2 2.6 3.6 2.6 3.6s2.6-1.6 2.6-3.6c0-1.3-1-2.6-2.6-2.6z" fill="currentColor"/>
+        </svg>
+        <span class="text-[13px] font-semibold tracking-[0.3em] uppercase text-white">Deck<span class="text-[#6fae7f] font-light">Counter</span></span>
+      </div>
+
+      <div class="absolute right-10 flex items-center gap-6">
+        <button
+          id="settings-toggle"
+          class="text-[10px] font-medium tracking-[0.3em] uppercase text-zinc-500 hover:text-white transition-colors"
+        >Configuration</button>
+        <a
+          href="https://github.com/VidipKhattar"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-[10px] font-medium tracking-[0.3em] uppercase text-zinc-500 hover:text-white transition-colors"
+        >@VidipKhattar</a>
+      </div>
+
+      <div id="settings-panel" class="absolute right-10 top-14 w-72 bg-[#1a1a1a] border border-zinc-800 rounded p-6 space-y-4 shadow-2xl z-20">
+        <h3 class="text-[9px] font-bold uppercase tracking-widest text-zinc-600 mb-2">Detection Thresholds</h3>
+
+        <label class="block space-y-1.5">
+          <span class="text-[10px] text-zinc-500 uppercase tracking-wide">Confidence Threshold</span>
+          <input id="setting-confidence" type="number" min="0.01" max="0.99" step="0.01"
+                 class="w-full bg-[#141414] border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
+        </label>
+
+        <label class="block space-y-1.5">
+          <span class="text-[10px] text-zinc-500 uppercase tracking-wide">Min Consensus Frames</span>
+          <input id="setting-min-consensus" type="number" min="1" step="1"
+                 class="w-full bg-[#141414] border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
+        </label>
+
+        <label class="block space-y-1.5">
+          <span class="text-[10px] text-zinc-500 uppercase tracking-wide">Presence Confidence</span>
+          <input id="setting-presence-confidence" type="number" min="0.01" max="0.99" step="0.01"
+                 class="w-full bg-[#141414] border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
+        </label>
+
+        <button id="settings-apply" class="w-full py-2 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+          Apply
+        </button>
+      </div>
+    </header>
+
+    <main class="flex-1 flex flex-col items-center">
+      <div class="camera-container camera-animate">
+        <img id="video-feed" src="/video" alt="Camera feed" class="absolute inset-0 w-full h-full object-cover">
+        <div id="status-label" class="absolute top-12 text-[10px] uppercase tracking-[0.4em] text-zinc-500 font-medium">Place a card</div>
+        <div id="guide-box" class="guide-box"></div>
+
+        <div id="onboarding-overlay">
+          <span class="text-[9px] uppercase tracking-[0.4em] text-zinc-500 font-bold mb-2">How it works</span>
+          <div class="space-y-3 px-10">
+            <p class="text-xs text-zinc-300"><span class="text-zinc-500">1.</span> Hold a card inside the box below</p>
+            <p class="text-xs text-zinc-300"><span class="text-zinc-500">2.</span> Riffle through the deck — swipe your thumb <span class="text-zinc-100 font-medium">sideways across the short edge</span> of the cards, not flicking down from the top</p>
+            <p class="text-xs text-zinc-300"><span class="text-zinc-500">3.</span> Press <span class="text-zinc-100 font-medium">Q</span> or click <span class="text-zinc-100 font-medium">Stop &amp; Analyze</span> when done</p>
+          </div>
+          <button id="onboarding-dismiss" class="mt-2 py-2 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+            Got it
+          </button>
+        </div>
+      </div>
+
+      <div class="flex justify-center mb-8">
+        <button id="cta-stop" class="hidden py-2.5 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+          Stop &amp; Analyze <span class="opacity-60">(or press Q)</span>
+        </button>
+      </div>
+
+      <div id="results-section" class="max-w-[1200px] w-full px-10 py-16 grid grid-cols-1 lg:grid-cols-4 gap-16 results-animate">
+        <div class="lg:col-span-3 space-y-16">
+          <div>
+            <div class="flex items-center gap-3 mb-8">
+              <div class="w-1.5 h-1.5 bg-[#8b5a5a]"></div>
+              <h2 id="missing-heading" class="text-[10px] font-bold uppercase tracking-[0.25em] text-zinc-200">Critical: Missing Components (0)</h2>
+            </div>
+            <div id="missing-tokens" class="flex flex-wrap gap-16"></div>
+          </div>
+
+          <div class="pt-12 border-t border-white/5">
+            <div class="flex items-center gap-3 mb-8">
+              <div class="w-1 h-1 bg-[#4a7c59]"></div>
+              <h2 id="captured-heading" class="text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Detected Inventory (0)</h2>
+            </div>
+            <div id="captured-tokens" class="flex flex-wrap gap-2.5"></div>
+          </div>
+        </div>
+
+        <aside class="space-y-10">
+          <div class="space-y-6">
+            <div>
+              <h3 class="text-[9px] font-bold uppercase tracking-widest text-zinc-600 mb-4">Core Metrics</h3>
+              <div class="space-y-3">
+                <div class="flex justify-between items-baseline border-b border-white/5 pb-2">
+                  <span class="text-[10px] text-zinc-500 uppercase">Accuracy</span>
+                  <span id="metric-accuracy" class="text-sm text-zinc-300">—</span>
+                </div>
+                <div class="flex justify-between items-baseline border-b border-white/5 pb-2">
+                  <span class="text-[10px] text-zinc-500 uppercase">Sample Count</span>
+                  <span id="metric-samples" class="text-sm text-zinc-300">—</span>
+                </div>
+                <div class="flex justify-between items-baseline border-b border-white/5 pb-2">
+                  <span class="text-[10px] text-zinc-500 uppercase">Latency</span>
+                  <span id="metric-latency" class="text-sm text-zinc-300">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <button id="cta-action-reset" class="w-full py-3 border border-zinc-700 text-zinc-400 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+            Refresh Dataset
+          </button>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <div id="card-preview-modal">
+    <div class="flex flex-col items-center gap-4">
+      <img id="card-preview-image" src="" alt="Best captured frame">
+      <button id="card-preview-close" class="py-2 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+        Close
+      </button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

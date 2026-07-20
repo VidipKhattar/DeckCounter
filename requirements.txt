@@ -1,3 +1,5 @@
 ultralytics
 opencv-python
 huggingface_hub
+fastapi
+uvicorn[standard]
