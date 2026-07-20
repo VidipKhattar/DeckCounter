@@ -22,9 +22,14 @@
   const cardPreviewModal = document.getElementById("card-preview-modal");
   const cardPreviewImage = document.getElementById("card-preview-image");
   const cardPreviewClose = document.getElementById("card-preview-close");
+  const videoFeed = document.getElementById("video-feed");
+  const captureCanvas = document.getElementById("capture-canvas");
 
   const SUIT_NAMES = { S: "Spades", H: "Hearts", D: "Diamonds", C: "Clubs" };
   const ONBOARDED_KEY = "deckcounter_onboarded";
+  const FRAME_INTERVAL_MS = 120;
+
+  let activeSocket = null;
 
   function describeCard(card) {
     const suit = card.slice(-1);
@@ -128,9 +133,46 @@
   function connect() {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
-    ws.onclose = () => setTimeout(connect, 1000);
+    ws.binaryType = "arraybuffer";
+    activeSocket = ws;
+    ws.onclose = () => {
+      if (activeSocket === ws) {
+        activeSocket = null;
+      }
+      setTimeout(connect, 1000);
+    };
     ws.onerror = () => ws.close();
     ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
+  }
+
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      videoFeed.srcObject = stream;
+      await videoFeed.play();
+    } catch (err) {
+      statusLabel.textContent = "Camera unavailable — check browser permissions";
+      return;
+    }
+
+    const context = captureCanvas.getContext("2d");
+    setInterval(() => {
+      if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
+      if (!videoFeed.videoWidth || !videoFeed.videoHeight) return;
+
+      captureCanvas.width = videoFeed.videoWidth;
+      captureCanvas.height = videoFeed.videoHeight;
+      context.drawImage(videoFeed, 0, 0, captureCanvas.width, captureCanvas.height);
+      captureCanvas.toBlob(
+        (blob) => {
+          if (blob && activeSocket && activeSocket.readyState === WebSocket.OPEN) {
+            blob.arrayBuffer().then((buf) => activeSocket.send(buf));
+          }
+        },
+        "image/jpeg",
+        0.7
+      );
+    }, FRAME_INTERVAL_MS);
   }
 
   stopButton.addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
@@ -195,4 +237,5 @@
   });
 
   connect();
+  startCamera();
 })();

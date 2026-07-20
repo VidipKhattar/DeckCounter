@@ -1,9 +1,12 @@
 """FastAPI web UI for the playing-card deck checker.
 
-Wraps the shared detection core in detector.py with a simple state machine
-(WAITING -> RECORDING -> PROCESSING -> DONE) driven by a background camera
-thread, and exposes it to a browser via an MJPEG video stream, a WebSocket
-for state updates, and two POST endpoints (stop / reset).
+The browser owns the camera (getUserMedia) and streams JPEG frames up over a
+WebSocket; this server never touches camera hardware directly, which is what
+lets it run on a host that isn't the user's own laptop. Everything else is
+unchanged from the local version: a state machine (WAITING -> RECORDING ->
+PROCESSING -> DONE) drives detection via detector.py, with the same WebSocket
+used to broadcast state updates back down to the client, plus a handful of
+POST endpoints (stop / reset / settings).
 
 Run with: uvicorn src.web.server:app
 """
@@ -18,15 +21,15 @@ from enum import Enum
 from pathlib import Path
 
 import cv2
+import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import detector  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-CAMERA_INDEX = 0
 
 
 class State(str, Enum):
@@ -37,7 +40,7 @@ class State(str, Enum):
 
 
 class Session:
-    """Mutable state for the single local capture session, guarded by a lock."""
+    """Mutable state for the single capture session, guarded by a lock."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -45,7 +48,6 @@ class Session:
         self.frames: list = []
         self.box: tuple | None = None
         self.stop_requested = False
-        self.latest_jpeg: bytes | None = None
         self.results: dict | None = None
         self.best_frame_jpegs: dict = {}
         self.session_id = uuid.uuid4().hex[:8]
@@ -114,61 +116,39 @@ def encode_jpeg(frame) -> bytes:
     return buf.tobytes() if ok else b""
 
 
-def draw_guide_box(frame, box: tuple[int, int, int, int], recording: bool):
-    display = frame.copy()
-    x1, y1, x2, y2 = box
-    color = (0, 200, 0) if recording else (0, 200, 255)
-    cv2.rectangle(display, (x1, y1), (x2, y2), color, 3)
-    return display
-
-
-def camera_loop() -> None:
-    """Runs in a background thread for the lifetime of the server."""
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
-        print(f"Error: could not open camera index {CAMERA_INDEX}", file=sys.stderr)
-        broadcast({"type": "error", "message": f"Could not open camera index {CAMERA_INDEX}"})
+async def handle_incoming_frame(data: bytes) -> None:
+    """Decode a JPEG frame sent by the browser and feed it into the state machine."""
+    frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
         return
 
-    # Give the camera a moment to warm up; the first read(s) right after
-    # opening can fail even though the device is valid.
-    for _ in range(30):
-        if cap.read()[0]:
-            break
-        time.sleep(0.1)
+    with session.lock:
+        state = session.state
+        if session.box is None:
+            height, width = frame.shape[:2]
+            session.box = detector.compute_guide_box(width, height)
+        box = session.box
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            time.sleep(0.05)
-            continue
-
-        with session.lock:
-            state = session.state
-            if session.box is None:
-                height, width = frame.shape[:2]
-                session.box = detector.compute_guide_box(width, height)
-            box = session.box
-
-        if state == State.WAITING:
-            if detector.check_presence(model, frame, box, settings.as_dict()["presence_confidence"]):
-                with session.lock:
-                    session.state = State.RECORDING
-                broadcast({"type": "recording", "frame_count": 0})
-            session.latest_jpeg = encode_jpeg(draw_guide_box(frame, box, recording=False))
-
-        elif state == State.RECORDING:
+    if state == State.WAITING:
+        presence_confidence = settings.as_dict()["presence_confidence"]
+        loop = asyncio.get_running_loop()
+        is_present = await loop.run_in_executor(
+            None, detector.check_presence, model, frame, box, presence_confidence
+        )
+        if is_present:
             with session.lock:
-                session.frames.append(frame)
-                frame_count = len(session.frames)
-                should_stop = session.stop_requested
-            session.latest_jpeg = encode_jpeg(draw_guide_box(frame, box, recording=True))
-            broadcast({"type": "recording", "frame_count": frame_count})
-            if should_stop:
-                start_processing()
+                if session.state == State.WAITING:
+                    session.state = State.RECORDING
+            broadcast({"type": "recording", "frame_count": 0})
 
-        else:  # PROCESSING / DONE: video feed holds on the last processed frame
-            time.sleep(0.05)
+    elif state == State.RECORDING:
+        with session.lock:
+            session.frames.append(frame)
+            frame_count = len(session.frames)
+            should_stop = session.stop_requested
+        broadcast({"type": "recording", "frame_count": frame_count})
+        if should_stop:
+            start_processing()
 
 
 def start_processing() -> None:
@@ -208,12 +188,6 @@ def run_processing(frames: list) -> None:
     start_time = time.monotonic()
 
     def on_frame(frame_index, total, frame, detections):
-        annotated = frame.copy()
-        for d in detections:
-            color = (0, 200, 0) if d.confident else (0, 0, 200)
-            x1, y1, x2, y2 = d.box
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-        session.latest_jpeg = encode_jpeg(annotated)
         broadcast({"type": "processing", "current": frame_index, "total": total})
 
     current_settings = settings.as_dict()
@@ -259,7 +233,6 @@ async def lifespan(_: FastAPI):
     event_loop = asyncio.get_running_loop()
     print(f"Loading playing-card model ({detector.MODEL_REPO})...")
     model = detector.load_model()
-    threading.Thread(target=camera_loop, daemon=True).start()
     yield
 
 
@@ -317,20 +290,6 @@ async def update_settings(payload: dict):
     return updated
 
 
-def mjpeg_generator():
-    boundary = b"--frame"
-    while True:
-        jpeg = session.latest_jpeg
-        if jpeg:
-            yield boundary + b"\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-        time.sleep(0.033)
-
-
-@app.get("/video")
-async def video_feed():
-    return StreamingResponse(mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
@@ -350,7 +309,8 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.send_json({"type": "waiting"})
 
         while True:
-            await ws.receive_text()  # keep the connection open; client never sends anything meaningful
+            data = await ws.receive_bytes()
+            await handle_incoming_frame(data)
     except WebSocketDisconnect:
         pass
     finally:
