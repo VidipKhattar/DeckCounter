@@ -85,11 +85,18 @@ def extract_detections(boxes, names, confidence_threshold: float) -> list[Detect
     return detections
 
 
-def check_presence(model: YOLO, frame, box: tuple[int, int, int, int], presence_confidence: float) -> bool:
-    """Cheap check: is anything card-shaped sitting in the guide box right now?"""
+def presence_confidence_in_box(model: YOLO, frame, box: tuple[int, int, int, int]) -> float:
+    """Highest detection confidence for anything card-shaped in the guide box (0.0 if nothing)."""
     crop = crop_with_padding(frame, box)
     results = model.predict(crop, verbose=False)[0]
-    return bool(len(results.boxes)) and float(results.boxes.conf.max()) > presence_confidence
+    if not len(results.boxes):
+        return 0.0
+    return float(results.boxes.conf.max())
+
+
+def check_presence(model: YOLO, frame, box: tuple[int, int, int, int], presence_confidence: float) -> bool:
+    """Cheap check: is anything card-shaped sitting in the guide box right now?"""
+    return presence_confidence_in_box(model, frame, box) > presence_confidence
 
 
 @dataclass

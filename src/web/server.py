@@ -116,8 +116,13 @@ def encode_jpeg(frame) -> bytes:
     return buf.tobytes() if ok else b""
 
 
+presence_check_busy = False
+
+
 async def handle_incoming_frame(data: bytes) -> None:
     """Decode a JPEG frame sent by the browser and feed it into the state machine."""
+    global presence_check_busy
+
     frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return
@@ -130,12 +135,28 @@ async def handle_incoming_frame(data: bytes) -> None:
         session.box = box
 
     if state == State.WAITING:
-        presence_confidence = settings.as_dict()["presence_confidence"]
-        loop = asyncio.get_running_loop()
-        is_present = await loop.run_in_executor(
-            None, detector.check_presence, model, frame, box, presence_confidence
+        # A full model inference runs per frame here. On a slow CPU that's much
+        # slower than the browser's send rate, so skip frames that arrive while
+        # a check is still running rather than letting an ever-growing backlog
+        # of stale frames pile up.
+        if presence_check_busy:
+            return
+        presence_check_busy = True
+        try:
+            presence_confidence = settings.as_dict()["presence_confidence"]
+            loop = asyncio.get_running_loop()
+            max_conf = await loop.run_in_executor(
+                None, detector.presence_confidence_in_box, model, frame, box
+            )
+        finally:
+            presence_check_busy = False
+
+        print(
+            f"[presence] frame={width}x{height} max_conf={max_conf:.3f} "
+            f"threshold={presence_confidence:.3f} -> {'DETECTED' if max_conf > presence_confidence else 'none'}",
+            flush=True,
         )
-        if is_present:
+        if max_conf > presence_confidence:
             with session.lock:
                 if session.state == State.WAITING:
                     session.state = State.RECORDING
