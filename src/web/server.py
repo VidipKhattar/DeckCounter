@@ -122,12 +122,12 @@ async def handle_incoming_frame(data: bytes) -> None:
     if frame is None:
         return
 
+    height, width = frame.shape[:2]
+    box = detector.compute_guide_box(width, height)
+
     with session.lock:
         state = session.state
-        if session.box is None:
-            height, width = frame.shape[:2]
-            session.box = detector.compute_guide_box(width, height)
-        box = session.box
+        session.box = box
 
     if state == State.WAITING:
         presence_confidence = settings.as_dict()["presence_confidence"]

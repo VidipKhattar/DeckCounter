@@ -57,6 +57,8 @@ def crop_with_padding(frame, box: tuple[int, int, int, int]):
     cy1 = max(0, y1 - pad_y)
     cx2 = min(width, x2 + pad_x)
     cy2 = min(height, y2 + pad_y)
+    if cx2 <= cx1 or cy2 <= cy1:
+        return frame
     return frame[cy1:cy2, cx1:cx2]
 
 
