@@ -15,6 +15,7 @@ MODEL_REPO = "sroot/yolo11s-playing-cards-detector"
 MODEL_FILE = "best.pt"
 
 CONFIDENCE_THRESHOLD = 0.35
+MAYBE_THRESHOLD = 0.18  # below CONFIDENCE_THRESHOLD: borderline reads land in a "maybe" bucket
 PRESENCE_CONFIDENCE = 0.25
 MIN_CONSENSUS_FRAMES = 1
 BATCH_SIZE = 8
@@ -85,10 +86,18 @@ def extract_detections(boxes, names, confidence_threshold: float) -> list[Detect
     return detections
 
 
+# Presence detection just needs to answer "is a card roughly here?" to trigger
+# recording — it doesn't need to read the card. Running it at a small input size
+# makes that first-card check several times faster, so recording kicks in almost
+# immediately instead of lagging behind the moment you hold a card up. The full
+# per-card reading later still runs at the model's native resolution.
+PRESENCE_IMGSZ = 320
+
+
 def presence_confidence_in_box(model: YOLO, frame, box: tuple[int, int, int, int]) -> float:
     """Highest detection confidence for anything card-shaped in the guide box (0.0 if nothing)."""
     crop = crop_with_padding(frame, box)
-    results = model.predict(crop, verbose=False)[0]
+    results = model.predict(crop, verbose=False, imgsz=PRESENCE_IMGSZ, conf=0.05)[0]
     if not len(results.boxes):
         return 0.0
     return float(results.boxes.conf.max())
@@ -101,9 +110,10 @@ def check_presence(model: YOLO, frame, box: tuple[int, int, int, int], presence_
 
 @dataclass
 class ConsensusResult:
-    seen: set
+    seen: set  # cleared the high (confidence) threshold in enough frames
+    maybe: set  # cleared the lower (maybe) threshold but not the high one
     detection_counts: dict
-    accepted_confidences: list
+    accepted_confidences: list  # confidences backing the `seen` set (for the accuracy metric)
     best_frame_index: dict  # card -> index into the `frames` list passed to run_consensus
     best_detection: dict  # card -> the Detection with the highest confidence seen for it
 
@@ -116,39 +126,63 @@ def run_consensus(
     frames: list,
     confidence_threshold: float,
     min_consensus_frames: int,
+    maybe_threshold: Optional[float] = None,
     batch_size: int = BATCH_SIZE,
     on_frame: Optional[OnFrameCallback] = None,
+    augment: bool = False,
 ) -> ConsensusResult:
     """Run detection over every frame and apply multi-frame consensus voting.
 
-    A card only counts as "seen" if it clears confidence_threshold in at
-    least min_consensus_frames separate frames, which filters out one-off
+    A card counts as "seen" if it clears confidence_threshold in at least
+    min_consensus_frames separate frames, which filters out one-off
     misclassifications from motion blur while still catching cards that were
     only clear for a moment.
+
+    If `maybe_threshold` (< confidence_threshold) is given, cards that clear
+    only that lower bar in enough frames land in a separate `maybe` bucket —
+    surfacing borderline reads the user can double-check by eye rather than
+    silently dropping them into "missing" or over-trusting them as "seen".
+
+    `augment=True` enables test-time augmentation: each frame is run through
+    the model at multiple scales/flips and the results are merged. It's 2-3x
+    slower but recovers cards that a single-shot pass misses on soft or oddly
+    angled frames — a recall boost from the same weights, no bigger model
+    needed. Only worth it here because processing is offline (post-capture).
 
     `on_frame(frame_index, total, frame, detections)`, if given, is called
     after each frame is processed so callers can render progress/annotations.
     """
-    detection_counts: dict = defaultdict(int)
+    low_threshold = maybe_threshold if maybe_threshold is not None else confidence_threshold
+    confident_counts: dict = defaultdict(int)
+    maybe_counts: dict = defaultdict(int)
     confidence_by_card: dict = defaultdict(list)
     best_frame_index: dict = {}
     best_detection: dict = {}
     total = len(frames)
 
+    # Let the model surface low-confidence candidates and do the real filtering
+    # ourselves — otherwise ultralytics' default internal conf (0.25) would
+    # silently drop anything below it, capping how low the thresholds can go.
+    predict_conf = min(low_threshold, 0.10)
+
     for start in range(0, total, batch_size):
         batch = frames[start : start + batch_size]
-        batch_results = model.predict(batch, verbose=False)
+        batch_results = model.predict(batch, verbose=False, augment=augment, conf=predict_conf)
 
         for offset, result in enumerate(batch_results):
             frame_index = start + offset
-            detections = extract_detections(result.boxes, result.names, confidence_threshold)
-            confident_cards = {d.card for d in detections if d.confident}
-            for card in confident_cards:
-                detection_counts[card] += 1
+            # Extract everything above the low bar; bucket per-card by its best
+            # confidence in this frame.
+            detections = extract_detections(result.boxes, result.names, low_threshold)
+            cards_in_frame = {d.card for d in detections if d.card is not None and d.confidence > low_threshold}
+            for card in cards_in_frame:
                 best_for_card = max(
-                    (d for d in detections if d.card == card and d.confident), key=lambda d: d.confidence
+                    (d for d in detections if d.card == card), key=lambda d: d.confidence
                 )
-                confidence_by_card[card].append(best_for_card.confidence)
+                maybe_counts[card] += 1
+                if best_for_card.confidence > confidence_threshold:
+                    confident_counts[card] += 1
+                    confidence_by_card[card].append(best_for_card.confidence)
                 if card not in best_detection or best_for_card.confidence > best_detection[card].confidence:
                     best_detection[card] = best_for_card
                     best_frame_index[card] = frame_index
@@ -156,12 +190,17 @@ def run_consensus(
             if on_frame is not None:
                 on_frame(frame_index + 1, total, batch[offset], detections)
 
-    seen = {card for card, count in detection_counts.items() if count >= min_consensus_frames}
+    seen = {card for card, count in confident_counts.items() if count >= min_consensus_frames}
+    maybe = {
+        card for card, count in maybe_counts.items() if count >= min_consensus_frames
+    } - seen
+    kept = seen | maybe
     accepted_confidences = [conf for card in seen for conf in confidence_by_card[card]]
     return ConsensusResult(
         seen=seen,
-        detection_counts=dict(detection_counts),
+        maybe=maybe,
+        detection_counts=dict(maybe_counts),
         accepted_confidences=accepted_confidences,
-        best_frame_index={card: idx for card, idx in best_frame_index.items() if card in seen},
-        best_detection={card: det for card, det in best_detection.items() if card in seen},
+        best_frame_index={card: idx for card, idx in best_frame_index.items() if card in kept},
+        best_detection={card: det for card, det in best_detection.items() if card in kept},
     )
