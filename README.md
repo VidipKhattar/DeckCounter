@@ -2,11 +2,17 @@
 
 *The deck audit tool nobody at the poker table asked for, but everybody secretly needed.*
 
+![DeckCounter demo](docs/demo.gif)
+
+*(Flip through a deck in front of the camera, get a seen/missing report back in seconds.*
+
+**[Live demo →](https://cardcountercv-production.up.railway.app/)**
+
 ## The origin story
 
 Back in uni, poker nights often ran long: six, seven hours deep, blinds climbing, everyone slowly losing the ability to count to 52. And somewhere around hour four, a card would go missing. Slid under the table, stuck to someone's sleeve (deliberately or otherwise), or just gone.
 
-A missing 7 is annoying. A missing Ace is a crisis — it quietly flips the odds for the rest of the night and nobody at the table would ever know. Manually counting a shuffled deck card-by-card at 3am, mid-game, with a table full of impatient degenerates, is nobody's idea of fun. And it's *exactly* the kind of tedious, error-prone task a camera and a model are better at than tired human eyes.
+A missing 7 is annoying. A missing Ace is telling — it secretly flips the odds for the rest of the night and nobody at the table would ever know. Manually counting a shuffled deck card-by-card at 3am, mid-game, with a table full of impatient degenerates, is nobody's idea of fun. And it's *exactly* the kind of tedious, error-prone task a camera and a model are better at than tired human eyes.
 
 So: hold the deck up to your laptop, flick through it like you're riffling for a shuffle, and let the camera do the counting.
 
@@ -31,8 +37,6 @@ pip install -r requirements.txt
 python3 src/main.py
 ```
 
-macOS will ask for camera permission the first time — approve it, or you'll be staring at a very confused error message.
-
 ### Tuning it (optional)
 
 If the deck's giving you trouble (bad lighting, fast hands, whatever), these flags are there to help:
@@ -49,7 +53,7 @@ Slower, deliberate flips beat fast ones — motion blur is the real enemy here, 
 
 ## Web UI
 
-Same detection pipeline, browser-based front end instead of the OpenCV window — a dark "System Analytics" dashboard with a live camera feed, an auto-starting guide box, and results laid out as a captured-cards grid, a discrepancies panel, and a metrics sidebar (reliability, frame count, process time).
+Same detection pipeline, browser-based front end instead of the OpenCV window — a dark, minimal dashboard with a live camera feed, an auto-starting guide box, and results laid out as a detected-inventory grid, a missing-components panel, and a metrics sidebar (accuracy, sample count, latency).
 
 ```bash
 source venv/bin/activate
@@ -58,24 +62,20 @@ uvicorn src.web.server:app
 
 Then open `http://localhost:8000`. Your browser will ask for camera permission (it captures via `getUserMedia` and streams frames to the server over a WebSocket — the server itself never touches camera hardware, which is what makes it deployable). Same flow as the CLI otherwise — place a card in the box to auto-start, flip through the deck, then either click **Stop & Analyze** or press **Q** to trigger processing. **Refresh Dataset** resets the session for another run.
 
-## Deploying (free)
-
-The web UI is designed to run anywhere, not just your own laptop, since the camera lives in the browser rather than on the server. It's set up to deploy to [Render](https://render.com) as a free Docker Web Service:
-
-1. Push this repo to GitHub (if it isn't already).
-2. On Render, create a new **Web Service**, connect the repo, and set the environment to **Docker** — it'll auto-detect the `Dockerfile` at the repo root.
-3. Leave the port field alone; the `Dockerfile` already listens on whatever port Render assigns via its `$PORT` environment variable.
-4. Deploy, open the service's URL, grant camera permission, and it works the same as running it locally.
-
-Free-tier notes: Render spins the service down after 15 minutes of inactivity (the next visit takes about a minute to wake back up), and gives 750 free instance-hours per workspace per month.
-
-(Not on Vercel — its serverless functions can't hold the model's dependencies within the bundle size limit, and can't run a persistent background process the way this app needs. Not on Hugging Face Spaces either — its Docker SDK requires account verification/upgrade that not every account has.)
-
 ## Under the hood
 
-- **OpenCV** for frame decoding and all the box-drawing / on-screen text
+- **OpenCV** for frame decoding and box-drawing
 - A pretrained **YOLOv11** playing-card detector ([`sroot/yolo11s-playing-cards-detector`](https://huggingface.co/sroot/yolo11s-playing-cards-detector) off Hugging Face) — no training pipeline of our own to babysit
 - A two-phase capture-then-process design: buffer frames raw while you flip (so the camera never lags behind your hands), then batch-analyze everything afterward with multi-frame consensus voting to smooth out blur-induced misreads
-- Detection logic lives in `src/detector.py`, shared by both the CLI (`src/main.py`) and the web server (`src/web/server.py`, FastAPI + an MJPEG stream + a WebSocket for live state)
+- Detection logic lives in `src/detector.py`, shared by both the CLI (`src/main.py`) and the web server (`src/web/server.py`)
+- In the web version, the **browser** owns the camera (`getUserMedia`) and streams JPEG frames up over a WebSocket for the server to run detection on — the server never touches camera hardware directly, which is what makes it deployable to a host that isn't your own laptop
 
-No cheaters were caught in the making of this tool. Probably.
+## Process & technical decisions
+
+**Pretrained over from-scratch.** The first version of this repo trained a custom Keras classifier on a hand-labeled dataset of card photos. It underperformed a pretrained YOLOv8/11 model already fine-tuned on a public Roboflow playing-card dataset — for a well-defined, already-solved 52-class problem, the right call was finding a model that had already learned it, not re-deriving it. That earlier training pipeline was deleted entirely in favor of `sroot/yolo11s-playing-cards-detector` off the Hugging Face Hub.
+
+**Recall was the real bottleneck, not accuracy.** Early on, running detection live on every frame missed most cards during a fast flip-through — a card only visible for one or two motion-blurred frames just doesn't clear a confidence threshold reliably. The fix was architectural, not a bigger model: **decouple capture from inference**. Buffer raw frames with zero processing while flipping (so hand speed is never CPU-bound), then batch-process everything afterward with **multi-frame consensus voting** — a card only counts once it clears the confidence threshold in multiple separate frames, which tolerates single-frame misses without letting one blurry frame cost a card. That single change took real-world recall from roughly 20/52 to consistently 50/52 in testing.
+
+
+
+No cheaters were caught in the making of this tool.
