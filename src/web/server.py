@@ -67,22 +67,36 @@ class Settings:
     def __init__(self):
         self.lock = threading.Lock()
         self.confidence = detector.CONFIDENCE_THRESHOLD
+        self.maybe_threshold = detector.MAYBE_THRESHOLD
         self.min_consensus = detector.MIN_CONSENSUS_FRAMES
         self.presence_confidence = detector.PRESENCE_CONFIDENCE
+        self.augment = True  # test-time augmentation on the processing pass
 
     def as_dict(self) -> dict:
         with self.lock:
             return {
                 "confidence": self.confidence,
+                "maybe_threshold": self.maybe_threshold,
                 "min_consensus": self.min_consensus,
                 "presence_confidence": self.presence_confidence,
+                "augment": self.augment,
             }
 
-    def update(self, confidence: float, min_consensus: int, presence_confidence: float) -> None:
+    def update(
+        self,
+        confidence: float,
+        maybe_threshold: float,
+        min_consensus: int,
+        presence_confidence: float,
+        augment: bool,
+    ) -> None:
         with self.lock:
             self.confidence = min(max(confidence, 0.01), 0.99)
+            # Keep maybe strictly below the confident bar so the two tiers stay distinct.
+            self.maybe_threshold = min(max(maybe_threshold, 0.01), self.confidence - 0.01)
             self.min_consensus = max(int(min_consensus), 1)
             self.presence_confidence = min(max(presence_confidence, 0.01), 0.99)
+            self.augment = bool(augment)
 
 
 session = Session()
@@ -213,21 +227,33 @@ def run_processing(frames: list) -> None:
 
     current_settings = settings.as_dict()
     result = detector.run_consensus(
-        model, frames, current_settings["confidence"], current_settings["min_consensus"], on_frame=on_frame
+        model,
+        frames,
+        current_settings["confidence"],
+        current_settings["min_consensus"],
+        maybe_threshold=current_settings["maybe_threshold"],
+        on_frame=on_frame,
+        augment=current_settings["augment"],
     )
     elapsed = time.monotonic() - start_time
 
     seen = result.seen
-    missing = detector.FULL_DECK - seen
+    maybe = result.maybe
+    missing = detector.FULL_DECK - seen - maybe
     reliability = (
         sum(result.accepted_confidences) / len(result.accepted_confidences) * 100
         if result.accepted_confidences
         else 0.0
     )
     latency_ms = (elapsed / len(frames) * 1000) if frames else 0.0
+
+    def card_sort(cards):
+        return sorted(cards, key=lambda c: (detector.SUITS.index(c[-1]), detector.RANKS.index(c[:-1])))
+
     results = {
-        "seen": sorted(seen, key=lambda c: (detector.SUITS.index(c[-1]), detector.RANKS.index(c[:-1]))),
-        "missing": sorted(missing, key=lambda c: (detector.SUITS.index(c[-1]), detector.RANKS.index(c[:-1]))),
+        "seen": card_sort(seen),
+        "maybe": card_sort(maybe),
+        "missing": card_sort(missing),
         "metrics": {
             "reliability": round(reliability, 1),
             "frame_count": len(frames),
@@ -303,8 +329,10 @@ async def get_settings():
 async def update_settings(payload: dict):
     settings.update(
         confidence=float(payload.get("confidence", settings.confidence)),
+        maybe_threshold=float(payload.get("maybe_threshold", settings.maybe_threshold)),
         min_consensus=int(payload.get("min_consensus", settings.min_consensus)),
         presence_confidence=float(payload.get("presence_confidence", settings.presence_confidence)),
+        augment=bool(payload.get("augment", settings.augment)),
     )
     updated = settings.as_dict()
     broadcast({"type": "settings", **updated})
