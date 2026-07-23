@@ -17,17 +17,31 @@
   const settingsPanel = document.getElementById("settings-panel");
   const settingsApply = document.getElementById("settings-apply");
   const settingConfidence = document.getElementById("setting-confidence");
+  const settingMaybeThreshold = document.getElementById("setting-maybe-threshold");
   const settingMinConsensus = document.getElementById("setting-min-consensus");
   const settingPresenceConfidence = document.getElementById("setting-presence-confidence");
+  const settingAugment = document.getElementById("setting-augment");
   const cardPreviewModal = document.getElementById("card-preview-modal");
   const cardPreviewImage = document.getElementById("card-preview-image");
   const cardPreviewClose = document.getElementById("card-preview-close");
   const videoFeed = document.getElementById("video-feed");
   const captureCanvas = document.getElementById("capture-canvas");
+  const cameraContainer = document.getElementById("camera-container");
+  const recordingBadge = document.getElementById("recording-badge");
+  const analyzingOverlay = document.getElementById("analyzing-overlay");
+  const analyzingPercent = document.getElementById("analyzing-percent");
+  const maybeBlock = document.getElementById("maybe-block");
+  const maybeHeading = document.getElementById("maybe-heading");
+  const maybeTokens = document.getElementById("maybe-tokens");
+  const cameraSwitchButton = document.getElementById("camera-switch");
 
   const SUIT_NAMES = { S: "Spades", H: "Hearts", D: "Diamonds", C: "Clubs" };
-  const ONBOARDED_KEY = "deckcounter_onboarded";
-  const FRAME_INTERVAL_MS = 120;
+  // Send frames far more often while recording so a card that only flashes past
+  // for a fraction of a second still lands in several frames (more chances to
+  // catch a sharp one between motion blur). Recording just buffers frames with
+  // no inference, so a high rate here is cheap.
+  const FRAME_INTERVAL_MS = 55;
+  const JPEG_QUALITY = 0.92;
 
   let activeSocket = null;
 
@@ -39,7 +53,14 @@
 
   function setState(type) {
     guideBox.classList.toggle("recording", type === "recording");
+    cameraContainer.classList.toggle("is-recording", type === "recording");
+    recordingBadge.classList.toggle("show", type === "recording");
     stopButton.classList.toggle("hidden", type !== "recording");
+    analyzingOverlay.classList.toggle("show", type === "processing");
+    // The full-screen overlay covers everything during processing, so the
+    // small on-video label is hidden entirely rather than duplicating text
+    // on top of the camera feed.
+    statusLabel.classList.toggle("hidden", type === "processing");
     resultsSection.style.display = type === "done" ? "grid" : "none";
     statusLabel.classList.toggle("status-done", type === "done");
     statusLabel.classList.toggle("status-recording", type === "recording");
@@ -48,8 +69,6 @@
       statusLabel.textContent = "Place a card";
     } else if (type === "recording") {
       statusLabel.textContent = "Recording — flip through the deck";
-    } else if (type === "processing") {
-      statusLabel.textContent = "Analyzing…";
     } else if (type === "done") {
       statusLabel.textContent = "Analysis complete";
     } else if (type === "error") {
@@ -57,15 +76,15 @@
     }
   }
 
-  function renderCaptured(cards) {
-    capturedTokens.innerHTML = "";
+  function renderTokenGrid(container, cards, extraClass) {
+    container.innerHTML = "";
     cards.forEach((card) => {
       const span = document.createElement("span");
-      span.className = "token token-captured";
+      span.className = `token token-captured ${extraClass}`.trim();
       span.textContent = card;
-      span.title = `View best captured frame for ${describeCard(card)}`;
+      span.title = `View the frame ${describeCard(card)} was recognized in`;
       span.addEventListener("click", () => openCardPreview(card));
-      capturedTokens.appendChild(span);
+      container.appendChild(span);
     });
   }
 
@@ -109,25 +128,35 @@
     setState(msg.type);
 
     if (msg.type === "done") {
+      const maybe = msg.maybe || [];
       missingHeading.textContent = `Critical: Missing Components (${msg.missing.length})`;
       renderMissing(msg.missing);
+      maybeBlock.style.display = maybe.length ? "block" : "none";
+      maybeHeading.textContent = `Uncertain — Worth a Look (${maybe.length})`;
+      renderTokenGrid(maybeTokens, maybe, "token-maybe");
       capturedHeading.textContent = `Detected Inventory (${msg.seen.length})`;
-      renderCaptured(msg.seen);
+      renderTokenGrid(capturedTokens, msg.seen, "");
       metricAccuracy.textContent = `${msg.metrics.reliability}%`;
       metricSamples.textContent = msg.metrics.frame_count;
       metricLatency.textContent = `${msg.metrics.latency_ms}ms`;
     } else if (msg.type === "recording") {
       statusLabel.textContent = `Recording — ${msg.frame_count} frames captured`;
     } else if (msg.type === "processing") {
+      // No text on the video itself during processing — the full-screen
+      // analyzing overlay (opaque, off the camera) is the single source of
+      // truth for progress now, so it always reads clearly regardless of
+      // what's behind the camera feed.
       const pct = msg.total ? Math.round((msg.current / msg.total) * 100) : 0;
-      statusLabel.textContent = `Analyzing… ${pct}%`;
+      analyzingPercent.textContent = `${pct}%`;
     }
   }
 
   function applySettingsToForm(values) {
     settingConfidence.value = values.confidence;
+    settingMaybeThreshold.value = values.maybe_threshold;
     settingMinConsensus.value = values.min_consensus;
     settingPresenceConfidence.value = values.presence_confidence;
+    settingAugment.checked = Boolean(values.augment);
   }
 
   function connect() {
@@ -145,18 +174,48 @@
     ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
   }
 
+  // "user" (front) is the default — the app is designed to be propped up
+  // facing you while you hold cards up to it, same as the laptop-webcam
+  // workflow — but phones have a back camera too, so a switch button lets
+  // people flip to "environment" if that framing works better for them.
+  let currentFacingMode = "user";
+
+  async function requestCameraStream(facingMode) {
+    // Request a high resolution so the model has more pixels to work with on
+    // soft/small cards; the browser gives the closest it can.
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+      });
+    } catch (err) {
+      return await navigator.mediaDevices.getUserMedia({ video: true });
+    }
+  }
+
+  async function switchCamera() {
+    const nextFacingMode = currentFacingMode === "user" ? "environment" : "user";
+    const previousStream = videoFeed.srcObject;
+    try {
+      const stream = await requestCameraStream(nextFacingMode);
+      videoFeed.srcObject = stream;
+      await videoFeed.play();
+      currentFacingMode = nextFacingMode;
+      if (previousStream) {
+        previousStream.getTracks().forEach((track) => track.stop());
+      }
+    } catch (err) {
+      // Couldn't get the other camera (e.g. device only has one) — keep the
+      // stream that was already running.
+    }
+  }
+
   async function startCamera() {
     try {
-      // Prefer the rear camera on phones/tablets (front camera is the wrong
-      // choice for scanning cards); laptops with only one camera ignore this.
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" } },
-        });
-      } catch (err) {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      }
+      const stream = await requestCameraStream(currentFacingMode);
       videoFeed.srcObject = stream;
       await videoFeed.play();
     } catch (err) {
@@ -168,6 +227,9 @@
     setInterval(() => {
       if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
       if (!videoFeed.videoWidth || !videoFeed.videoHeight) return;
+      // Backpressure: if frames aren't draining to the server fast enough, skip
+      // this one rather than letting the send buffer grow without bound.
+      if (activeSocket.bufferedAmount > 1_000_000) return;
 
       captureCanvas.width = videoFeed.videoWidth;
       captureCanvas.height = videoFeed.videoHeight;
@@ -179,7 +241,7 @@
           }
         },
         "image/jpeg",
-        0.7
+        JPEG_QUALITY
       );
     }, FRAME_INTERVAL_MS);
   }
@@ -192,13 +254,10 @@
     }
   });
 
-  // Onboarding overlay: shown once per browser until dismissed.
-  if (localStorage.getItem(ONBOARDED_KEY)) {
-    onboardingOverlay.classList.add("hidden");
-  }
+  // Onboarding overlay: shown every visit (not just the first), so nobody
+  // lands on a stale previous run without a reminder of how it works.
   onboardingDismiss.addEventListener("click", () => {
     onboardingOverlay.classList.add("hidden");
-    localStorage.setItem(ONBOARDED_KEY, "1");
   });
 
   // Settings panel.
@@ -220,8 +279,10 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         confidence: parseFloat(settingConfidence.value),
+        maybe_threshold: parseFloat(settingMaybeThreshold.value),
         min_consensus: parseInt(settingMinConsensus.value, 10),
         presence_confidence: parseFloat(settingPresenceConfidence.value),
+        augment: settingAugment.checked,
       }),
     })
       .then((res) => res.json())
@@ -245,6 +306,13 @@
     }
   });
 
-  connect();
-  startCamera();
+  cameraSwitchButton.addEventListener("click", () => switchCamera());
+
+  // Every fresh page load starts clean — no leftover results or in-progress
+  // session from a previous visit. Reset before opening the WebSocket so the
+  // very first state this page sees is "waiting", not a stale prior run.
+  fetch("/api/reset", { method: "POST" }).finally(() => {
+    connect();
+    startCamera();
+  });
 })();

@@ -18,8 +18,12 @@
     }
 
     .camera-container {
+      /* Mobile is a portrait, camera-first layout: the viewfinder fills most
+         of the screen (like a real camera app) rather than being a shrunk
+         copy of the wide desktop panel. */
       width: 94%;
-      aspect-ratio: 4 / 3;
+      aspect-ratio: 3 / 4;
+      max-height: 62vh;
       background: #000;
       border: 1px solid #2d2d2d;
       position: relative;
@@ -28,8 +32,8 @@
       justify-content: center;
       overflow: hidden;
       border-radius: 4px;
-      margin-top: 1.5rem;
-      margin-bottom: 2rem;
+      margin-top: 1rem;
+      margin-bottom: 1.5rem;
     }
 
     @media (min-width: 768px) {
@@ -37,12 +41,14 @@
         width: 60%;
         max-width: 800px;
         aspect-ratio: 16 / 9;
+        max-height: none;
         margin-top: 4rem;
+        margin-bottom: 2rem;
       }
     }
 
     .guide-box {
-      width: clamp(130px, 45vw, 200px);
+      width: clamp(150px, 55vw, 200px);
       aspect-ratio: 5 / 7;
       border: 1px solid #b8a536;
       position: relative;
@@ -170,6 +176,87 @@
       color: #6fae7f;
     }
 
+    /* Prominent RECORDING badge so it's unmistakable that capture has started
+       and the user should begin flipping. */
+    #recording-badge {
+      display: none;
+      position: absolute;
+      top: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 1rem;
+      background: rgba(20, 20, 20, 0.85);
+      border: 1px solid rgba(74, 124, 89, 0.6);
+      border-radius: 999px;
+      z-index: 12;
+    }
+
+    #recording-badge.show {
+      display: flex;
+    }
+
+    .rec-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #e5484d;
+      animation: recPulse 1s ease-in-out infinite;
+    }
+
+    @keyframes recPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.35; transform: scale(0.7); }
+    }
+
+    .camera-container.is-recording {
+      box-shadow: 0 0 0 2px rgba(74, 124, 89, 0.7);
+    }
+
+    /* Big, unmissable full-screen analyzing overlay. */
+    #analyzing-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0a0a0a;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2rem;
+      z-index: 40;
+    }
+
+    #analyzing-overlay.show {
+      display: flex;
+    }
+
+    .analyzing-spinner {
+      width: 96px;
+      height: 96px;
+      border: 4px solid rgba(111, 174, 127, 0.15);
+      border-top-color: #6fae7f;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    #analyzing-percent {
+      font-size: 3.5rem;
+      font-weight: 200;
+      letter-spacing: -0.02em;
+      color: #e5e5e5;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .token-maybe {
+      color: #b8a536;
+      border-color: #4a4630;
+    }
+
     button, a {
       touch-action: manipulation;
     }
@@ -210,6 +297,12 @@
         </label>
 
         <label class="block space-y-1.5">
+          <span class="text-[10px] text-zinc-500 uppercase tracking-wide">Maybe Threshold <span class="text-zinc-600 normal-case">(below = uncertain)</span></span>
+          <input id="setting-maybe-threshold" type="number" min="0.01" max="0.99" step="0.01"
+                 class="w-full bg-[#141414] border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
+        </label>
+
+        <label class="block space-y-1.5">
           <span class="text-[10px] text-zinc-500 uppercase tracking-wide">Min Consensus Frames</span>
           <input id="setting-min-consensus" type="number" min="1" step="1"
                  class="w-full bg-[#141414] border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
@@ -221,6 +314,12 @@
                  class="w-full bg-[#141414] border border-zinc-700 rounded px-2 py-1.5 text-sm text-zinc-200">
         </label>
 
+        <label class="flex items-center gap-2.5 pt-1 cursor-pointer">
+          <input id="setting-augment" type="checkbox"
+                 class="w-3.5 h-3.5 accent-[#4a7c59] bg-[#141414] border-zinc-700">
+          <span class="text-[10px] text-zinc-500 uppercase tracking-wide">Enhanced accuracy <span class="text-zinc-600 normal-case">(slower)</span></span>
+        </label>
+
         <button id="settings-apply" class="w-full py-2 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
           Apply
         </button>
@@ -228,9 +327,24 @@
     </header>
 
     <main class="flex-1 flex flex-col items-center">
-      <div class="camera-container camera-animate">
+      <div id="camera-container" class="camera-container camera-animate">
         <video id="video-feed" autoplay playsinline muted class="absolute inset-0 w-full h-full object-contain"></video>
         <canvas id="capture-canvas" class="hidden"></canvas>
+        <button
+          id="camera-switch"
+          title="Switch camera"
+          class="absolute bottom-3 right-3 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-black/60 border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-500 transition-all"
+        >
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-5 h-5">
+            <path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M9 12.5a3 3 0 1 1 6 0 3 3 0 0 1-6 0z" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M15.5 5.5l1.2 1.6M8.5 5.5L7.3 7.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <div id="recording-badge">
+          <span class="rec-dot"></span>
+          <span class="text-[10px] uppercase tracking-[0.25em] text-[#8fce9f] font-bold">Recording — flip now</span>
+        </div>
         <div id="status-label" class="absolute top-12 text-[10px] uppercase tracking-[0.4em] text-zinc-500 font-medium">Place a card</div>
         <div id="guide-box" class="guide-box"></div>
 
@@ -239,16 +353,17 @@
           <div class="space-y-3 px-5 md:px-10">
             <p class="text-xs text-zinc-300"><span class="text-zinc-500">1.</span> Hold a card inside the box below</p>
             <p class="text-xs text-zinc-300"><span class="text-zinc-500">2.</span> Riffle through the deck — swipe your thumb <span class="text-zinc-100 font-medium">sideways across the short edge</span> of the cards, not flicking down from the top</p>
-            <p class="text-xs text-zinc-300"><span class="text-zinc-500">3.</span> Press <span class="text-zinc-100 font-medium">Q</span> or click <span class="text-zinc-100 font-medium">Stop &amp; Analyze</span> when done</p>
+            <p class="text-xs text-zinc-300"><span class="text-zinc-500">3.</span> You can just <span class="text-zinc-100 font-medium">shuffle through the whole deck</span> — as long as every card gets shown to the camera at some point, it doesn't need to be neat</p>
+            <p class="text-xs text-zinc-300"><span class="text-zinc-500">4.</span> Press <span class="text-zinc-100 font-medium">Q</span> or click <span class="text-zinc-100 font-medium">Stop &amp; Analyze</span> when done</p>
           </div>
-          <button id="onboarding-dismiss" class="mt-2 py-2 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+          <button id="onboarding-dismiss" class="mt-2 py-3 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
             Got it
           </button>
         </div>
       </div>
 
       <div class="flex justify-center mb-8">
-        <button id="cta-stop" class="hidden py-2.5 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
+        <button id="cta-stop" class="hidden py-3.5 md:py-2.5 px-10 md:px-8 border border-zinc-700 text-zinc-300 text-[11px] md:text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
           Stop &amp; Analyze <span class="opacity-60">(or press Q)</span>
         </button>
       </div>
@@ -263,11 +378,21 @@
             <div id="missing-tokens" class="flex flex-wrap gap-8 md:gap-16"></div>
           </div>
 
+          <div id="maybe-block" class="pt-12 border-t border-white/5" style="display:none">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="w-1.5 h-1.5 bg-[#b8a536]"></div>
+              <h2 id="maybe-heading" class="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#b8a536]">Uncertain — Worth a Look (0)</h2>
+            </div>
+            <p class="text-[10px] text-zinc-600 mb-6">Detected with low confidence — double-check these against the deck by eye.</p>
+            <div id="maybe-tokens" class="flex flex-wrap gap-2.5"></div>
+          </div>
+
           <div class="pt-12 border-t border-white/5">
-            <div class="flex items-center gap-3 mb-8">
+            <div class="flex items-center gap-3 mb-3">
               <div class="w-1 h-1 bg-[#4a7c59]"></div>
               <h2 id="captured-heading" class="text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Detected Inventory (0)</h2>
             </div>
+            <p class="text-[10px] text-zinc-600 mb-6">Tap any card to see the exact frame it was recognized in.</p>
             <div id="captured-tokens" class="flex flex-wrap gap-2.5"></div>
           </div>
         </div>
@@ -307,6 +432,15 @@
       <button id="card-preview-close" class="py-2 px-8 border border-zinc-700 text-zinc-300 text-[10px] uppercase tracking-widest hover:bg-zinc-800 hover:text-white transition-all">
         Close
       </button>
+    </div>
+  </div>
+
+  <div id="analyzing-overlay">
+    <div class="analyzing-spinner"></div>
+    <div class="flex flex-col items-center gap-2">
+      <span id="analyzing-percent">0%</span>
+      <span class="text-[10px] uppercase tracking-[0.4em] text-zinc-500 font-bold">Analyzing deck</span>
+      <span class="text-[10px] text-zinc-600 mt-1">Reading every captured frame — hang tight</span>
     </div>
   </div>
 
