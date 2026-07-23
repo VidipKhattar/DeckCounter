@@ -98,6 +98,7 @@ def process_frames(
     confidence_threshold: float,
     min_consensus_frames: int,
     playback_delay_ms: int,
+    augment: bool = False,
 ) -> set:
     """Run detection over every buffered frame, showing live progress, and return the seen set."""
     total = len(frames)
@@ -120,7 +121,7 @@ def process_frames(
         print(f"Processed {frame_index}/{frame_total} frames", end="\r")
 
     result = detector.run_consensus(
-        model, frames, confidence_threshold, min_consensus_frames, on_frame=on_frame
+        model, frames, confidence_threshold, min_consensus_frames, on_frame=on_frame, augment=augment
     )
     if total:
         print()
@@ -165,6 +166,11 @@ def main() -> None:
         default=detector.PRESENCE_CONFIDENCE,
         help=f"Confidence needed in the guide box to auto-start recording (default {detector.PRESENCE_CONFIDENCE})",
     )
+    parser.add_argument(
+        "--augment",
+        action="store_true",
+        help="Enable test-time augmentation during processing (slower, better recall)",
+    )
     args = parser.parse_args()
 
     print(f"Loading playing-card model ({detector.MODEL_REPO})...")
@@ -193,7 +199,9 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Captured {len(frames)} frames. Processing...")
-    seen = process_frames(model, frames, args.confidence, args.min_consensus, args.playback_delay)
+    seen = process_frames(
+        model, frames, args.confidence, args.min_consensus, args.playback_delay, augment=args.augment
+    )
 
     cv2.destroyAllWindows()
     print_summary(seen)
